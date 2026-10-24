@@ -1,0 +1,15 @@
+#!/bin/sh
+# Startet flash mit Root-Rechten aus der venv des Repos.
+# Root ist nötig, um Blockgeräte zu lesen, zu beschreiben und auszuhängen.
+repo="$(dirname "$(readlink -f "$0")")/.."
+python="$repo/.venv/bin/python"
+
+if [ ! -x "$python" ]; then
+    echo "Keine venv gefunden – siehe README.md (Installation)." >&2
+    exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo PYTHONPATH="$repo/src" "$python" -m flash "$@"
+fi
+PYTHONPATH="$repo/src" exec "$python" -m flash "$@"

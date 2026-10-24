@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flash"
+version = "0.1.0"
+description = "SD-Karten und USB-Sticks prüfen, testen und Daten retten – interaktive TUI"
+requires-python = ">=3.11"
+dependencies = ["textual>=8"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+flash = "flash.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
