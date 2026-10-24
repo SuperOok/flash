@@ -20,9 +20,9 @@ Gerätenamens.
 ## Installation
 
 ```sh
-sudo apt install gddrescue f3 testdisk e2fsprogs dosfstools exfatprogs
-python3 -m venv --without-pip .venv
-python3 -m pip --python .venv/bin/python install -e '.[dev]'
+sudo apt install python3-venv gddrescue f3 testdisk e2fsprogs dosfstools exfatprogs
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
 ln -s "$PWD/bin/flash" ~/.local/bin/flash
 ```
 

@@ -17,9 +17,8 @@ zum Prüfen, Testen und Retten von SD-Karten und USB-Sticks unter Linux (Ubuntu)
 
 ## Entwicklung
 
-- venv: `python3 -m venv --without-pip .venv` und
-  `python3 -m pip --python .venv/bin/python install -e '.[dev]'`
-  (auf diesem System fehlt `python3-venv`/ensurepip, daher ohne pip in der venv).
+- venv: `python3 -m venv .venv` und `.venv/bin/pip install -e '.[dev]'`
+  (braucht das apt-Paket `python3-venv`).
 - Tests: `.venv/bin/python -m pytest -q` – vor jedem Commit.
 - Oberfläche ohne Root ansehen: `.venv/bin/python -m flash` (Liste geht, Prüfungen nicht).
 - Ein Agent kann `bin/flash` nicht sinnvoll starten (sudo-Passwort, echtes Gerät nötig).
