@@ -33,15 +33,19 @@ BANNER = (
     "[dim]SD-Karten und USB-Sticks prüfen, testen und Daten retten[/]"
 )
 
-# (id, Titel, Beschreibung, überschreibt Daten)
+# (id, Titel, Beschreibung, Art: "read" nur lesend, "eject" aushängen, "write" überschreibt)
 ACTIONS = [
-    ("quick", "Schnell-Check", "Stichproben, Geschwindigkeit, Dateisystem – ca. 1 Minute", False),
-    ("full", "Kompletter Lesetest", "liest jeden Block (badblocks) – je nach Größe lange", False),
-    ("rescue", "Daten retten", "Image mit ddrescue sichern, danach PhotoRec anbieten", False),
-    ("photorec", "Dateien direkt wiederherstellen", "PhotoRec direkt auf dem Gerät", False),
-    ("intensive", "Intensiv-Check", "Fake-Erkennung + Schreib-/Lesetest mit Zufallsmuster", True),
-    ("thorough", "Intensiv-Check gründlich", "4 Testmuster – sehr langsam, aber gründlich", True),
+    ("quick", "Schnell-Check", "Stichproben, Geschwindigkeit, Dateisystem – ca. 1 Minute", "read"),
+    ("full", "Kompletter Lesetest", "liest jeden Block (badblocks) – je nach Größe lange", "read"),
+    ("rescue", "Daten retten", "Image mit ddrescue sichern, danach PhotoRec anbieten", "read"),
+    ("photorec", "Dateien direkt wiederherstellen", "PhotoRec direkt auf dem Gerät", "read"),
+    ("eject", "Aushängen & sicher entfernen", "Partitionen aushängen, Gerät abschalten – danach abziehen", "eject"),
+    ("intensive", "Intensiv-Check", "Fake-Erkennung + Schreib-/Lesetest mit Zufallsmuster", "write"),
+    ("thorough", "Intensiv-Check gründlich", "4 Testmuster – sehr langsam, aber gründlich", "write"),
 ]
+
+# Aktionen, die auch ohne Root-Rechte funktionieren (udisksctl fragt per polkit).
+NO_ROOT_ACTIONS = ("eject",)
 
 FLASH_THEME = Theme(
     name="flash",
@@ -82,9 +86,12 @@ class ActionScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         options = []
-        for key, title, description, destructive in ACTIONS:
-            if destructive:
+        for key, title, description, kind in ACTIONS:
+            if kind == "write":
                 prompt = f"[b {ERROR}]{title}[/]  [{ERROR}]überschreibt alles[/]\n  [dim]{description}[/]"
+            elif kind == "eject":
+                tag = f"[{WARN}]eingehängt[/]" if self.device.is_mounted else "[dim]nicht eingehängt[/]"
+                prompt = f"[b]{title}[/]  {tag}\n  [dim]{description}[/]"
             else:
                 prompt = f"[b]{title}[/]  [{OK}]nur lesend[/]\n  [dim]{description}[/]"
             options.append(Option(prompt, id=key))
@@ -93,7 +100,7 @@ class ActionScreen(ModalScreen[str | None]):
             yield OptionList(*options)
             if os.geteuid() != 0:
                 yield Static(
-                    f"[{WARN}]Ohne Root-Rechte sind keine Prüfungen möglich – "
+                    f"[{WARN}]Ohne Root-Rechte sind keine Prüfungen möglich (Aushängen geht) – "
                     "mit [b]bin/flash[/] starten.[/]",
                     classes="dialog-hint",
                 )
@@ -337,6 +344,7 @@ class RunScreen(Screen):
 class DeviceScreen(Screen):
     BINDINGS = [
         Binding("enter", "choose", "Auswählen", show=True, priority=False),
+        Binding("a", "eject", "Aushängen"),
         Binding("r", "refresh", "Aktualisieren"),
         Binding("q", "app.quit", "Beenden"),
     ]
@@ -406,11 +414,20 @@ class DeviceScreen(Screen):
         self.snapshot = None
         self.refresh_devices()
 
-    def action_choose(self) -> None:
+    def selected_device(self) -> Device | None:
         table = self.query_one(DataTable)
-        if table.row_count:
-            key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
-            self.open_actions(self.devices[key])
+        if not table.row_count:
+            return None
+        key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        return self.devices[key]
+
+    def action_choose(self) -> None:
+        if device := self.selected_device():
+            self.open_actions(device)
+
+    def action_eject(self) -> None:
+        if device := self.selected_device():
+            self.start(device, "eject")
 
     @on(DataTable.RowSelected)
     def row_selected(self, event: DataTable.RowSelected) -> None:
@@ -422,10 +439,17 @@ class DeviceScreen(Screen):
     def start(self, device: Device, action: str | None) -> None:
         if action is None:
             return
-        if os.geteuid() != 0:
+        if os.geteuid() != 0 and action not in NO_ROOT_ACTIONS:
             self.notify("Prüfungen brauchen Root-Rechte – bitte mit bin/flash starten.", severity="error")
             return
-        if action == "quick":
+        if action == "eject":
+            # Neu einlesen, damit auch zwischenzeitlich eingehängte Partitionen erfasst werden.
+            fresh = find_device(device.identity)
+            if fresh is None:
+                self.notify("Gerät nicht mehr gefunden – schon abgezogen?", severity="warning")
+                return
+            self.run_job(jobs.eject(fresh))
+        elif action == "quick":
             self.run_job(jobs.quick_check(device))
         elif action == "full":
             self.run_job(jobs.full_read(device))

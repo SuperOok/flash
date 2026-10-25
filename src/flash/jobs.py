@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from rich.markup import escape
 
 from .devices import Device, human_size
 
@@ -205,14 +208,60 @@ def kernel_messages(device: Device) -> Callable:
     return run
 
 
+def _unmount_one(path: str) -> str | None:
+    """Hängt ein Blockgerät aus; liefert bei Fehler die Meldung."""
+    # udisksctl klappt auch ohne Root (polkit) und räumt den Mountpunkt unter /media auf.
+    if shutil.which("udisksctl"):
+        result = subprocess.run(
+            ["udisksctl", "unmount", "--no-user-interaction", "-b", path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return None
+    result = subprocess.run(["umount", path], capture_output=True, text=True)
+    return None if result.returncode == 0 else result.stderr.strip()
+
+
 def unmount(device: Device) -> Callable:
     def run(ctx: StepContext) -> str | None:
         for part in [device, *device.partitions]:
             for mount in part.mountpoints:
                 ctx.log(f"Hänge {part.path} aus ({mount}) …")
-                result = subprocess.run(["umount", part.path], capture_output=True, text=True)
-                if result.returncode != 0:
-                    return f"Aushängen fehlgeschlagen: {result.stderr.strip()}"
+                error = _unmount_one(part.path)
+                if error is not None:
+                    return f"Aushängen fehlgeschlagen: {error}"
+        if not device.is_mounted:
+            ctx.log("Nichts eingehängt.")
+        return None
+
+    return run
+
+
+def flush_buffers(ctx: StepContext) -> str | None:
+    os.sync()
+    ctx.log("Alle Schreibpuffer geschrieben.")
+    return None
+
+
+def power_off(device: Device) -> Callable:
+    """Schaltet das Gerät ab, damit es gefahrlos abgezogen werden kann."""
+
+    def run(ctx: StepContext) -> str | None:
+        if not shutil.which("udisksctl"):
+            ctx.log("[#E5B567]udisksctl fehlt – Gerät nicht abgeschaltet, kann aber abgezogen werden.[/]")
+            return None
+        result = subprocess.run(
+            ["udisksctl", "power-off", "--no-user-interaction", "-b", device.path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            # Fest eingebaute Kartenleser lassen sich oft nicht abschalten – Aushängen genügt.
+            ctx.log(f"[#E5B567]Abschalten nicht möglich: {escape(result.stderr.strip())}[/]")
+            ctx.log("Das Gerät ist ausgehängt und kann trotzdem abgezogen werden.")
+            return None
+        ctx.log(f"[#98C379]{device.path} ist abgeschaltet und kann abgezogen werden.[/]")
         return None
 
     return run
@@ -350,6 +399,15 @@ def intensive(device: Device, thorough: bool = False) -> Job:
     ]
     title = "Intensiv-Check gründlich" if thorough else "Intensiv-Check"
     return Job(title + " (überschreibt alles!)", device, steps, destructive=True)
+
+
+def eject(device: Device) -> Job:
+    steps: list[Step] = [
+        PythonStep("Partitionen aushängen", unmount(device)),
+        PythonStep("Schreibpuffer leeren (sync)", flush_buffers),
+        PythonStep("Gerät abschalten", power_off(device)),
+    ]
+    return Job("Aushängen und sicher entfernen", device, steps)
 
 
 def default_rescue_dir(device: Device) -> Path:

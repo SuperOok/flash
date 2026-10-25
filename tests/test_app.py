@@ -36,6 +36,20 @@ async def test_schnell_check_auf_image_laeuft_durch(tmp_path, monkeypatch):
         assert not [f for f in screen.failures if "Kernel" not in f[0]]
 
 
+async def test_taste_a_startet_aushaengen_auch_ohne_root(monkeypatch):
+    device = make_device()
+    monkeypatch.setattr(flash_app, "list_devices", lambda: [device])
+    monkeypatch.setattr(flash_app, "find_device", lambda identity: device)
+    monkeypatch.setattr(flash_app.os, "geteuid", lambda: 1000)
+    started = []
+    monkeypatch.setattr(flash_app.DeviceScreen, "run_job", lambda self, job: started.append(job))
+    async with flash_app.FlashApp().run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert [job.title for job in started] == ["Aushängen und sicher entfernen"]
+
+
 async def test_bestaetigung_verlangt_geraetenamen(monkeypatch):
     device = make_device()
     async with flash_app.FlashApp().run_test() as pilot:
