@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 from rich.markup import escape
@@ -18,7 +19,7 @@ from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Input, OptionList, ProgressBar, RichLog, Static
 from textual.widgets.option_list import Option
 
-from . import jobs
+from . import images, jobs
 from .devices import Device, find_device, human_size, list_devices
 from .jobs import CommandStep, Job, PythonStep, StepContext
 from .runner import run_command, run_python
@@ -42,6 +43,13 @@ ACTIONS = [
     ("eject", "Aushängen & sicher entfernen", "Partitionen aushängen, Gerät abschalten – danach abziehen", "eject"),
     ("intensive", "Intensiv-Check", "Fake-Erkennung + Schreib-/Lesetest mit Zufallsmuster", "write"),
     ("thorough", "Intensiv-Check gründlich", "4 Testmuster – sehr langsam, aber gründlich", "write"),
+]
+
+# Stufen der Wiederherstellung aus einem Sicherungs-Abbild; "copy" arbeitet an einer Kopie.
+IMAGE_ACTIONS = [
+    ("files", "1. Dateien wiederherstellen", "Abbild schreibgeschützt einhängen und alle Dateien kopieren", "read"),
+    ("repair", "2. Reparieren und wiederherstellen", "falls 1. scheitert: Kopie des Abbilds mit fsck reparieren, dann kopieren", "copy"),
+    ("imgphotorec", "3. Dateien suchen (PhotoRec)", "letzter Ausweg: findet Dateien am Inhalt – ohne Namen und Ordner", "read"),
 ]
 
 # Aktionen, die auch ohne Root-Rechte funktionieren (udisksctl fragt per polkit).
@@ -80,18 +88,21 @@ def device_summary(device: Device) -> str:
 class ActionScreen(ModalScreen[str | None]):
     BINDINGS = [Binding("escape", "close", "Zurück")]
 
-    def __init__(self, device: Device) -> None:
+    def __init__(self, device: Device, actions: list = ACTIONS) -> None:
         super().__init__()
         self.device = device
+        self.actions = actions
 
     def compose(self) -> ComposeResult:
         options = []
-        for key, title, description, kind in ACTIONS:
+        for key, title, description, kind in self.actions:
             if kind == "write":
                 prompt = f"[b {ERROR}]{title}[/]  [{ERROR}]überschreibt alles[/]\n  [dim]{description}[/]"
             elif kind == "eject":
                 tag = f"[{WARN}]eingehängt[/]" if self.device.is_mounted else "[dim]nicht eingehängt[/]"
                 prompt = f"[b]{title}[/]  {tag}\n  [dim]{description}[/]"
+            elif kind == "copy":
+                prompt = f"[b]{title}[/]  [{WARN}]Original bleibt unverändert[/]\n  [dim]{description}[/]"
             else:
                 prompt = f"[b]{title}[/]  [{OK}]nur lesend[/]\n  [dim]{description}[/]"
             options.append(Option(prompt, id=key))
@@ -116,17 +127,22 @@ class ActionScreen(ModalScreen[str | None]):
 class PathScreen(ModalScreen[Path | None]):
     BINDINGS = [Binding("escape", "close", "Zurück")]
 
-    def __init__(self, default: Path) -> None:
+    def __init__(
+        self,
+        default: Path,
+        title: str = "Zielverzeichnis für gerettete Daten",
+        hint: str = "Das Image braucht so viel Platz wie das ganze Gerät. "
+        "Nicht auf dem zu rettenden Gerät speichern!",
+    ) -> None:
         super().__init__()
         self.default = default
+        self.title_text = title
+        self.hint = hint
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
-            yield Static("[b]Zielverzeichnis für gerettete Daten[/]", classes="dialog-title")
-            yield Static(
-                "[dim]Das Image braucht so viel Platz wie das ganze Gerät. "
-                "Nicht auf dem zu rettenden Gerät speichern![/]"
-            )
+            yield Static(f"[b]{escape(self.title_text)}[/]", classes="dialog-title")
+            yield Static(f"[dim]{escape(self.hint)}[/]")
             yield Input(value=str(self.default))
 
     @on(Input.Submitted)
@@ -136,6 +152,95 @@ class PathScreen(ModalScreen[Path | None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+class ImageScreen(ModalScreen[Path | None]):
+    """Auswahl eines Sicherungs-Abbilds: gefundene Abbilder oder eigener Pfad."""
+
+    BINDINGS = [Binding("escape", "close", "Zurück")]
+
+    def __init__(self, bases: list[Path]) -> None:
+        super().__init__()
+        self.bases = bases
+        self.images: list[Path] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("[b]Sicherung öffnen[/]", classes="dialog-title")
+            yield OptionList()
+            yield Static(
+                "[dim]Anderes Abbild oder Ordner mit Abbildern (z. B. /mnt/data/flash-rescue):[/]",
+                classes="dialog-hint",
+            )
+            yield Input(value=str(self.bases[0]) if self.bases else "")
+
+    def on_mount(self) -> None:
+        self.show_images(images.find_images(*self.bases))
+
+    def show_images(self, found: list[Path]) -> None:
+        self.images = found
+        options = self.query_one(OptionList)
+        options.clear_options()
+        for i, image in enumerate(found):
+            stamp = time.strftime("%d.%m.%Y %H:%M", time.localtime(image.stat().st_mtime))
+            options.add_option(
+                Option(
+                    f"[b]{escape(image.name)}[/]  [dim]{human_size(image.stat().st_size)} · {stamp}[/]\n"
+                    f"  [dim]{escape(str(image.parent))}[/]",
+                    id=str(i),
+                )
+            )
+        options.display = bool(found)
+        if found:
+            options.highlighted = 0
+            options.focus()
+
+    @on(OptionList.OptionSelected)
+    def chosen(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(self.images[int(event.option_id)])
+
+    @on(Input.Submitted)
+    def submitted(self, event: Input.Submitted) -> None:
+        path = Path(event.value.strip()).expanduser()
+        if path.is_file():
+            self.dismiss(path)
+        elif path.is_dir():
+            found = images.find_images(path)
+            if not found:
+                self.notify("Keine Abbilder (*.img) in diesem Ordner gefunden.", severity="warning")
+            self.show_images(found)
+        else:
+            self.notify("Pfad nicht gefunden.", severity="error")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class WarnScreen(ModalScreen[bool]):
+    """Ausdrückliche Warnung vor einem riskanten, aber nicht zerstörenden Schritt."""
+
+    BINDINGS = [
+        Binding("enter", "ok", "Fortfahren"),
+        Binding("escape", "close", "Abbrechen"),
+    ]
+
+    def __init__(self, title: str, lines: list[str]) -> None:
+        super().__init__()
+        self.title_text = title
+        self.lines = lines
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog danger"):
+            yield Static(f"[b {WARN}]⚠ {escape(self.title_text)}[/]", classes="dialog-title")
+            for line in self.lines:
+                yield Static(line)
+            yield Static(f"\n[b {ACCENT}]Enter[/] fortfahren · [b {ACCENT}]Esc[/] abbrechen")
+
+    def action_ok(self) -> None:
+        self.dismiss(True)
+
+    def action_close(self) -> None:
+        self.dismiss(False)
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -263,7 +368,8 @@ class RunScreen(Screen):
     async def execute(self) -> None:
         log = self.query_one(RichLog)
         for i, step in enumerate(self.job.steps):
-            if self.cancel_requested:
+            always = isinstance(step, PythonStep) and step.always
+            if self.cancel_requested and not always:
                 self.set_state(i, "skipped")
                 continue
             self.set_state(i, "running")
@@ -277,7 +383,7 @@ class RunScreen(Screen):
                 error = self.run_interactive(step)
             else:
                 error = await run_command(step, self.ctx, self.set_status)
-            if self.cancel_requested:
+            if self.cancel_requested and not always:
                 error = "abgebrochen"
             if error:
                 self.set_state(i, "failed")
@@ -306,6 +412,8 @@ class RunScreen(Screen):
             lines += [f"  [{ERROR}]•[/] {escape(t)}: {escape(e)}" for t, e in self.failures]
             if self.job.destructive or self.job.title.startswith("Kompletter"):
                 lines.append(f"[{WARN}]Gerät nicht mehr für wichtige Daten verwenden.[/]")
+            if self.job.failure_hint:
+                lines.append(f"[{WARN}]{escape(self.job.failure_hint)}[/]")
         else:
             lines = [f"[b {OK}]✔ Alle Schritte ohne Befund abgeschlossen.[/]"]
             if self.job.destructive:
@@ -345,6 +453,7 @@ class DeviceScreen(Screen):
     BINDINGS = [
         Binding("enter", "choose", "Auswählen", show=True, priority=False),
         Binding("a", "eject", "Aushängen"),
+        Binding("b", "open_backup", "Sicherung öffnen"),
         Binding("r", "refresh", "Aktualisieren"),
         Binding("q", "app.quit", "Beenden"),
     ]
@@ -429,6 +538,73 @@ class DeviceScreen(Screen):
         if device := self.selected_device():
             self.start(device, "eject")
 
+    def action_open_backup(self) -> None:
+        def image_chosen(image: Path | None) -> None:
+            if image is None:
+                return
+            self.app.push_screen(
+                ActionScreen(images.image_device(image), IMAGE_ACTIONS),
+                lambda action: self.start_image(image, action),
+            )
+
+        self.app.push_screen(ImageScreen(images.default_image_bases()), image_chosen)
+
+    def start_image(self, image: Path, action: str | None) -> None:
+        if action is None:
+            return
+        if os.geteuid() != 0:
+            self.notify("Abbilder einhängen braucht Root-Rechte – bitte mit bin/flash starten.", severity="error")
+            return
+        if action == "files":
+            self.ask_target(
+                images.target_dir(image, "dateien"),
+                "Ziel für die wiederhergestellten Dateien",
+                "Das Abbild wird nur schreibgeschützt eingehängt und nicht verändert.",
+                lambda target: self.run_job(images.restore_files(image, target)),
+            )
+        elif action == "repair":
+            size = human_size(image.stat().st_size)
+
+            def warned(target: Path, ok: bool | None) -> None:
+                if ok:
+                    self.run_job(images.repair_and_restore(image, target))
+
+            def with_target(target: Path) -> None:
+                lines = [
+                    f"Das Original [b]{escape(image.name)}[/] bleibt unverändert – repariert wird "
+                    f"eine Kopie in [b]{escape(str(target))}[/].",
+                    f"Platzbedarf: bis zu {size} für die Kopie plus die wiederhergestellten Dateien.",
+                    f"\n[{WARN}]fsck kann in der Kopie beschädigte Ordner und Dateien kürzen, löschen "
+                    "oder nach FOUND.000 bzw. lost+found verschieben. Dabei können Strukturen "
+                    "zerstört werden.[/]",
+                    "[dim]Was hier verloren geht, findet PhotoRec im Original eventuell noch.[/]",
+                ]
+                self.app.push_screen(
+                    WarnScreen("Reparatur kann Strukturen zerstören", lines),
+                    lambda ok: warned(target, ok),
+                )
+
+            self.ask_target(
+                images.target_dir(image, "reparatur"),
+                "Ziel für Kopie und wiederhergestellte Dateien",
+                f"Hier entsteht eine Kopie des Abbilds ({size}) und darin der Ordner dateien/.",
+                with_target,
+            )
+        elif action == "imgphotorec":
+            self.ask_target(
+                images.target_dir(image, "photorec"),
+                "Ziel für die von PhotoRec gefundenen Dateien",
+                "PhotoRec liest das Abbild nur. Dateinamen und Ordner gehen dabei verloren.",
+                lambda target: self.run_job(images.photorec_image(image, target)),
+            )
+
+    def ask_target(self, default: Path, title: str, hint: str, then) -> None:
+        def chosen(path: Path | None) -> None:
+            if path is not None:
+                then(path)
+
+        self.app.push_screen(PathScreen(default, title, hint), chosen)
+
     @on(DataTable.RowSelected)
     def row_selected(self, event: DataTable.RowSelected) -> None:
         self.open_actions(self.devices[event.row_key.value])
@@ -486,7 +662,7 @@ class FlashApp(App):
     #banner {{ padding: 1 2; }}
     #devices {{ margin: 0 2; height: auto; max-height: 70%; }}
     #empty, #hint {{ padding: 1 2; color: $text-muted; }}
-    ActionScreen, PathScreen, ConfirmScreen {{ align: center middle; }}
+    ActionScreen, PathScreen, ConfirmScreen, ImageScreen, WarnScreen {{ align: center middle; }}
     .dialog {{
         width: 76; height: auto; padding: 1 2;
         border: round {ACCENT}; background: $surface;

@@ -55,6 +55,8 @@ class PythonStep:
     title: str
     # Liefert None bei Erfolg, sonst eine Fehlermeldung.
     func: Callable[[StepContext], str | None]
+    # Läuft auch nach Fehler oder Abbruch (Aufräumen, Dateirechte).
+    always: bool = False
 
 
 Step = CommandStep | PythonStep
@@ -71,6 +73,8 @@ class Job:
     # Wird nach erfolgreichem Lauf als weiterer Job angeboten.
     followup: Callable[[], Job] | None = field(default=None, repr=False)
     followup_label: str = ""
+    # Wird nach einem Lauf mit Fehlern als nächster Schritt empfohlen.
+    failure_hint: str = ""
 
 
 BADBLOCKS_PROGRESS = re.compile(r"([\d.]+)% done")
@@ -272,7 +276,7 @@ def chown_to_user(path: Path) -> Callable:
 
     def run(ctx: StepContext) -> str | None:
         uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
-        if not uid or not gid:
+        if not uid or not gid or not path.exists():
             return None
         for item in [path, *path.rglob("*")]:
             os.chown(item, int(uid), int(gid))
@@ -358,8 +362,14 @@ def rescue(device: Device, target: Path) -> Job:
         PythonStep("Dateirechte anpassen", chown_to_user(target)),
     ]
     job = Job("Datenrettung (Image mit ddrescue)", device, steps)
-    job.followup = lambda: photorec(device, target, source=image)
-    job.followup_label = "Dateien aus dem Image wiederherstellen (PhotoRec)"
+
+    def followup() -> Job:
+        from .images import restore_files  # images baut auf jobs auf
+
+        return restore_files(image, target / "dateien")
+
+    job.followup = followup
+    job.followup_label = "Dateien aus dem Image wiederherstellen (nur lesend)"
     return job
 
 
@@ -410,11 +420,14 @@ def eject(device: Device) -> Job:
     return Job("Aushängen und sicher entfernen", device, steps)
 
 
-def default_rescue_dir(device: Device) -> Path:
-    """Standardziel im Home des aufrufenden Benutzers, auch unter sudo."""
+def rescue_base() -> Path:
+    """Standardort für Sicherungen im Home des aufrufenden Benutzers, auch unter sudo."""
     user = os.environ.get("SUDO_USER", "")
-    home = Path(os.path.expanduser(f"~{user}"))
+    return Path(os.path.expanduser(f"~{user}")) / "flash-rescue"
+
+
+def default_rescue_dir(device: Device) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     ident = re.sub(r"[^A-Za-z0-9_-]+", "_", device.serial or device.title)
-    return home / "flash-rescue" / f"{ident}-{stamp}"
+    return rescue_base() / f"{ident}-{stamp}"
 

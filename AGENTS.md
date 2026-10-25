@@ -9,6 +9,8 @@ zum Prüfen, Testen und Retten von SD-Karten und USB-Sticks unter Linux (Ubuntu)
   Systemplatten werden nie angeboten
 - `src/flash/jobs.py` – Abläufe (`Job`) aus Schritten: `CommandStep` (externes Programm,
   Fortschritt per Regex) oder `PythonStep` (Funktion, läuft im Thread)
+- `src/flash/images.py` – Dateien aus Sicherungs-Abbildern holen: verbinden (`losetup`),
+  einhängen, kopieren, Reparatur an einer Kopie; Aufräumschritte mit `PythonStep.always`
 - `src/flash/runner.py` – führt Schritte aus, verteilt Ausgaben auf Log/Status/Fortschritt;
   unabhängig von der Oberfläche testbar
 - `src/flash/app.py` – Textual-App: Geräteliste → Aktionsmenü → (Bestätigung) → Laufansicht
@@ -35,6 +37,9 @@ zum Prüfen, Testen und Retten von SD-Karten und USB-Sticks unter Linux (Ubuntu)
   auch wenn sie per USB hängen.
 - Lesende Abläufe dürfen nichts schreiben: kein `-w` bei badblocks, fsck nur mit `-n`.
   `test_nur_intensiv_check_ist_destruktiv` sichert das ab.
+- Original-Abbilder nur mit `losetup --read-only` verbinden und nur `ro` einhängen;
+  Reparaturen (`fsck` ohne `-n`) ausschließlich an einer Kopie und erst nach `WarnScreen`.
+  `test_reparatur_arbeitet_nur_an_kopie` sichert das ab.
 - Rettungsziel nie auf dem Quellgerät; Images landen standardmäßig in
   `~<SUDO_USER>/flash-rescue/` und werden per `chown_to_user` zurückgegeben.
 
