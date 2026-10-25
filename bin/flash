@@ -10,6 +10,9 @@ if [ ! -x "$python" ]; then
 fi
 
 if [ "$(id -u)" -ne 0 ]; then
-    exec sudo PYTHONPATH="$repo/src" "$python" -m flash "$@"
+    # Anzeige-Variablen durchreichen, damit Strg+V die Zwischenablage lesen kann.
+    exec sudo PYTHONPATH="$repo/src" \
+        DISPLAY="${DISPLAY:-}" XAUTHORITY="${XAUTHORITY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+        "$python" -m flash "$@"
 fi
 PYTHONPATH="$repo/src" exec "$python" -m flash "$@"

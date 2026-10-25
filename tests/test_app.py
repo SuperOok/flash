@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from textual import events
 from textual.widgets import DataTable
 
 from flash import app as flash_app
@@ -116,6 +119,33 @@ async def test_aufraeumen_laeuft_auch_nach_fehler(monkeypatch):
         assert screen.states == ["failed", "skipped", "ok"]
         assert cleaned == [1]
         assert "Nächste Stufe" in str(screen.query_one("#result").render())
+
+
+async def test_eingefuegter_pfad_ersetzt_vorbelegung(tmp_path, monkeypatch):
+    monkeypatch.setattr(flash_app, "list_devices", lambda: [])
+    async with flash_app.FlashApp().run_test() as pilot:
+        results = []
+        pilot.app.push_screen(flash_app.PathScreen(tmp_path / "vorgabe"), results.append)
+        await pilot.pause()
+        field = pilot.app.screen.query_one(flash_app.PathInput)
+        # Einfügen im Terminal (Strg+Umschalt+V, Bracketed Paste)
+        field.post_message(events.Paste("'/mnt/data/flash-rescue'\n"))
+        await pilot.pause()
+        assert field.value == "/mnt/data/flash-rescue"
+        # Strg+V liest die System-Zwischenablage
+        monkeypatch.setattr(flash_app, "read_clipboard", lambda: "file:///mnt/data/mit%20Leerzeichen")
+        await pilot.press("ctrl+v")
+        await pilot.pause()
+        assert field.value == "/mnt/data/mit Leerzeichen"
+        # Kein Pfad: an der Cursorposition einfügen wie gewohnt
+        field.post_message(events.Paste("/unter"))
+        await pilot.pause()
+        field.post_message(events.Paste("ordner"))
+        await pilot.pause()
+        assert field.value == "/unterordner"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert results == [Path("/unterordner")]
 
 
 async def test_bestaetigung_verlangt_geraetenamen(monkeypatch):

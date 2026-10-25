@@ -51,7 +51,9 @@ flash
 lesbar sind.
 
 Bedienung: Pfeiltasten und Enter, `Esc` zurück bzw. Abbrechen, `a` aushängen,
-`b` Sicherung öffnen, `r` aktualisieren, `q` beenden. Die Geräteliste aktualisiert sich beim Ein- und Ausstecken selbst.
+`b` Sicherung öffnen, `r` aktualisieren, `q` beenden. In Pfadfelder lässt sich mit
+`Strg+V` (System-Zwischenablage, braucht `xclip`, `xsel` oder `wl-paste`) oder
+`Strg+Umschalt+V` (Terminal) einfügen; ein eingefügter Pfad ersetzt die Vorgabe. Die Geräteliste aktualisiert sich beim Ein- und Ausstecken selbst.
 
 ## Entwicklung
 

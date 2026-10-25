@@ -10,7 +10,7 @@ from pathlib import Path
 
 from rich.markup import escape
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -20,6 +20,7 @@ from textual.widgets import DataTable, Footer, Input, OptionList, ProgressBar, R
 from textual.widgets.option_list import Option
 
 from . import images, jobs
+from .clipboard import clean_path, looks_like_path, read_clipboard
 from .devices import Device, find_device, human_size, list_devices
 from .jobs import CommandStep, Job, PythonStep, StepContext
 from .runner import run_command, run_python
@@ -124,6 +125,40 @@ class ActionScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class PathInput(Input):
+    """Eingabefeld für Pfade mit Einfügen aus der System-Zwischenablage.
+
+    Ein eingefügter Pfad ersetzt den vorbelegten Text, statt angehängt zu werden.
+    """
+
+    def _on_paste(self, event: events.Paste) -> None:
+        # Verhindert, dass zusätzlich Input._on_paste den Text anhängt.
+        event.prevent_default()
+        event.stop()
+        self.insert_pasted(event.text)
+
+    def action_paste(self) -> None:
+        # Strg+V: Textual kennt nur seine interne Zwischenablage, daher System zuerst.
+        text = read_clipboard() or self.app.clipboard
+        if text:
+            self.insert_pasted(text)
+        else:
+            self.notify(
+                "Zwischenablage nicht lesbar – im Terminal mit Strg+Umschalt+V einfügen.",
+                severity="warning",
+            )
+
+    def insert_pasted(self, text: str) -> None:
+        path = clean_path(text)
+        if not path:
+            return
+        if looks_like_path(path):
+            self.value = path
+            self.cursor_position = len(path)
+        else:
+            self.replace(path, *self.selection)
+
+
 class PathScreen(ModalScreen[Path | None]):
     BINDINGS = [Binding("escape", "close", "Zurück")]
 
@@ -143,7 +178,7 @@ class PathScreen(ModalScreen[Path | None]):
         with Vertical(classes="dialog"):
             yield Static(f"[b]{escape(self.title_text)}[/]", classes="dialog-title")
             yield Static(f"[dim]{escape(self.hint)}[/]")
-            yield Input(value=str(self.default))
+            yield PathInput(value=str(self.default))
 
     @on(Input.Submitted)
     def submitted(self, event: Input.Submitted) -> None:
@@ -172,7 +207,7 @@ class ImageScreen(ModalScreen[Path | None]):
                 "[dim]Anderes Abbild oder Ordner mit Abbildern (z. B. /mnt/data/flash-rescue):[/]",
                 classes="dialog-hint",
             )
-            yield Input(value=str(self.bases[0]) if self.bases else "")
+            yield PathInput(value=str(self.bases[0]) if self.bases else "")
 
     def on_mount(self) -> None:
         self.show_images(images.find_images(*self.bases))

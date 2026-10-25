@@ -188,3 +188,12 @@ def test_kopieren_ueberspringt_unlesbare_dateien(tmp_path):
     assert (tmp_path / "ziel" / "ordner" / "gut.txt").read_text() == "gut"
     assert os.readlink(tmp_path / "ziel" / "link") == "ordner/gut.txt"
     assert not (tmp_path / "ziel" / "kaputt.txt").exists()
+
+
+def test_pfad_aus_zwischenablage_bereinigen():
+    from flash.clipboard import clean_path
+
+    assert clean_path("  /mnt/data/flash-rescue \n") == "/mnt/data/flash-rescue"
+    assert clean_path("'/mnt/data/a b.img'") == "/mnt/data/a b.img"
+    assert clean_path("file:///home/x/sdc%20alt.img\nfile:///zweite") == "/home/x/sdc alt.img"
+    assert clean_path("\n\n") == ""
